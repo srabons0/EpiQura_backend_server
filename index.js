@@ -18,12 +18,21 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-console.log("Stripe Key:", process.env.STRIPE_SECRET_KEY);
+// console.log("Stripe Key:", process.env.STRIPE_SECRET_KEY);
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 app.get("/", (req, res) => {
   res.send(`alhamdulillah, Food website its working on ${PORT}`);
 });
+
+const decodedKey = Buffer.from(process.env.FB_PRIVATE_KEY, "base64").toString(
+  "utf8",
+);
+const serviceAccount = JSON.parse(decodedKey);
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+console.log("Firebase Admin initialized");
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.frt4x83.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -50,12 +59,47 @@ async function run() {
     const orderedCollection = client.db("food").collection("ordered");
     const paymentCollection = client.db("food").collection("payment");
     const reviewCollection = client.db("food").collection("review");
+    const coverageCollection = client.db("food").collection("coverage");
     const reviewRequestCollection = client
       .db("food")
       .collection("reviewRequest");
     const paymentHistoryCollection = client
       .db("food")
       .collection("paymentHistory");
+
+    // verify //////
+    const verifyFBToken = async (req, res, next) => {
+      try {
+        const authHeader = req.headers.authorization;
+
+        if (!authHeader || !authHeader.startsWith("Bearer ")) {
+          return res.status(401).send({ message: "unauthorized access" });
+        }
+
+        const token = authHeader.split(" ")[1];
+// console.log(token);
+        const decoded = await admin.auth().verifyIdToken(token);
+        req.decoded = decoded;
+        next();
+      } catch (error) {
+        console.error("verifyFBToken error:", error.message);
+        return res.status(403).send({ message: "forbidden access" });
+      }
+    };
+
+    const adminVerify = async (req, res, next) => {
+      if (!req.decoded?.email) {
+        return res.status(403).send({ message: "Forbidden" });
+      }
+      const email = req.decoded.email;
+      const query = { email };
+      const user = await userCollection.findOne(query);
+      console.log(user.role);
+      if (user?.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
 
     ////////////:::: all food related APIs ::::////////////
 
@@ -65,20 +109,25 @@ async function run() {
       res.send(categoryList);
     });
 
-    app.post("/category", async (req, res) => {
+    app.post("/category", verifyFBToken, adminVerify, async (req, res) => {
       const newCategory = req.body;
       const result = await categoryCollection.insertOne(newCategory);
       res.send(result);
     });
 
-    app.delete("/category/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await categoryCollection.deleteOne(query);
-      res.send(result);
-    });
+    app.delete(
+      "/category/:id",
+      verifyFBToken,
+      adminVerify,
+      async (req, res) => {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await categoryCollection.deleteOne(query);
+        res.send(result);
+      },
+    );
 
-    app.patch("/category/:id", async (req, res) => {
+    app.patch("/category/:id", verifyFBToken, adminVerify, async (req, res) => {
       const id = req.params.id;
       const body = req.body;
       const filter = { _id: new ObjectId(id) };
@@ -97,7 +146,7 @@ async function run() {
     //   res.send(allFoodList);
     // });
 
-    app.get("/foodItem", async (req, res) => {
+    app.get("/foodItem", verifyFBToken, adminVerify, async (req, res) => {
       const page = parseInt(req.query.page);
       const limit = parseInt(req.query.limit);
       const type = req.query.type;
@@ -144,8 +193,18 @@ async function run() {
       res.send(result);
     });
 
+    // food item by menuSection
+    app.get("/foodItems/:menuSection", async (req, res) => {
+      const query = req.params.menuSection;
+      //   console.log(query);
+      const result = await allFoodItem
+        .find({ menuSection: { $regex: query, $options: "i" } })
+        .toArray();
+      res.send(result);
+    });
+
     ///////////:::: add new food item APIs ::::////////////
-    app.post("/foodItem", async (req, res) => {
+    app.post("/foodItem", verifyFBToken, adminVerify, async (req, res) => {
       const newFoodItem = req.body;
       const result = await allFoodItem.insertOne(newFoodItem);
       res.send(result);
@@ -161,34 +220,45 @@ async function run() {
     });
 
     ////////////:::: delete food item by id APIs ::::////////////
-    app.delete("/foodItemId/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await allFoodItem.deleteOne(query);
-      res.send(result);
-    });
+    app.delete(
+      "/foodItemId/:id",
+      verifyFBToken,
+      adminVerify,
+      async (req, res) => {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await allFoodItem.deleteOne(query);
+        res.send(result);
+      },
+    );
 
     ////////////:::: update food item by id APIs ::::////////////
-    app.patch("/foodItemId/:id", async (req, res) => {
-      const id = req.params.id;
-      const body = req.body;
-      const filter = { _id: new ObjectId(id) };
-      const updateDoc = {
-        $set: {
-          name: body.name,
-          realPrice: body.realPrice,
-          img: body.img,
-          type: body.type,
-          menuSection: body.menuSection,
-          cookingTime: body.cookingTime,
-          location: body.location,
-          additionalNote: body.additionalNote,
-          ingredients: body.ingredients,
-        },
-      };
-      const result = await allFoodItem.updateOne(filter, updateDoc);
-      res.send(result);
-    });
+    app.patch(
+      "/foodItemId/:id",
+      verifyFBToken,
+      adminVerify,
+      async (req, res) => {
+        const id = req.params.id;
+        const body = req.body;
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            name: body.name,
+            realPrice: body.realPrice,
+            img: body.img,
+            type: body.type,
+            menuSection: body.menuSection,
+            cookingTime: body.cookingTime,
+            location: body.location,
+            additionalNote: body.additionalNote,
+            ingredients: body.ingredients,
+            specialOffer: body.specialOffer,
+          },
+        };
+        const result = await allFoodItem.updateOne(filter, updateDoc);
+        res.send(result);
+      },
+    );
     //     await paymentHistoryCollection.updateMany(
     //   {},
     //   {
@@ -204,7 +274,7 @@ async function run() {
     //   const userList = await userCollection.find().toArray();
     //   res.send(userList);
     // });
-    app.get("/users", async (req, res) => {
+    app.get("/users", verifyFBToken,adminVerify, async (req, res) => {
       const page = parseInt(req.query.page);
       const limit = parseInt(req.query.limit);
       const role = req.query.role;
@@ -249,7 +319,7 @@ async function run() {
       res.send(userList);
     });
 
-    app.delete("/user/:id", async (req, res) => {
+    app.delete("/user/:id", verifyFBToken,adminVerify, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       //  console.log(query);
@@ -257,7 +327,7 @@ async function run() {
       res.send(result);
     });
 
-    app.patch("/user", async (req, res) => {
+    app.patch("/user", verifyFBToken, async (req, res) => {
       const email = req.query.email;
       const body = req.body;
       // console.log(email, body);
@@ -295,6 +365,24 @@ async function run() {
       res.send(result);
     });
 
+app.get(
+  "/user/admin/:email",
+  verifyFBToken,
+  async (req, res) => {
+    const email = req.params.email;
+    const tokenEmail = req.decoded?.email;
+console.log(email, tokenEmail);
+    if (!tokenEmail || email !== tokenEmail) {
+      return res.status(403).send({ message: "forbidden access" });
+    }
+
+    const user = await userCollection.findOne({ email });
+
+    const admin = user?.role === "admin";
+    res.send({ admin });
+  }
+);
+
     ////////////:::: review related APIs ::::////////////
     app.get("/review", async (req, res) => {
       const email = req.query.email;
@@ -303,71 +391,75 @@ async function run() {
       res.send(reviewList);
     });
 
-    app.post("/review", async (req, res) => {
+    app.post("/review", verifyFBToken, adminVerify, async (req, res) => {
       const newReview = req.body;
       const result = await reviewCollection.insertOne(newReview);
       res.send(result);
     });
 
-    app.delete("/review/:id", async (req, res) => {
+    app.delete("/review/:id", verifyFBToken, adminVerify, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await reviewCollection.deleteOne(query);
       res.send(result);
     });
 
-    app.get("/reviewRequest", async (req, res) => {
+    app.get("/reviewRequest",verifyFBToken, async (req, res) => {
       const email = req.query.email;
       const query = email ? { email } : {};
       const reviewRequestList = await reviewRequestCollection
-      .find(query)
-      .toArray();
-      console.log(email,reviewRequestList);
+        .find(query)
+        .toArray();
+      console.log(email, reviewRequestList);
       res.send(reviewRequestList);
     });
 
-    app.post("/reviewRequest", async (req, res) => {
+    app.post("/reviewRequest",verifyFBToken, async (req, res) => {
       const newReviewRequest = req.body;
       const result = await reviewRequestCollection.insertOne(newReviewRequest);
       res.send(result);
     });
 
-    app.delete("/reviewRequest/:id", async (req, res) => {
+    app.delete("/reviewRequest/:id",verifyFBToken, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await reviewRequestCollection.deleteOne(query);
       res.send(result);
     });
 
-    app.patch("/reviewRequest", async (req, res) => {
-      const { id, status } = req.body;
-      const filter = { _id: new ObjectId(id) };
-      const updateReviewStatus = await reviewRequestCollection.updateOne(
-        filter,
-        { $set: { status } }
-      );
-      if (status === "Approved") {
-        const approvedReview = await reviewRequestCollection.findOne(filter);
-        const insertApprovedReview = await reviewCollection.insertOne(
-          approvedReview
+    app.patch(
+      "/reviewRequest",
+      verifyFBToken,
+      adminVerify,
+      async (req, res) => {
+        const { id, status } = req.body;
+        const filter = { _id: new ObjectId(id) };
+        const updateReviewStatus = await reviewRequestCollection.updateOne(
+          filter,
+          { $set: { status } },
         );
-        const deleteReview = await reviewRequestCollection.deleteOne(filter);
-        return res.send({
-          updateReviewStatus,
-          insertApprovedReview,
-          deleteReview,
-        });
-      }
-      if (status === "Rejected") {
-        const deleteReview = await reviewRequestCollection.deleteOne(filter);
-        return res.send({
-          updateReviewStatus,
-          deleteReview,
-        });
-      }
+        if (status === "Approved") {
+          const approvedReview = await reviewRequestCollection.findOne(filter);
+          const insertApprovedReview =
+            await reviewCollection.insertOne(approvedReview);
+          const deleteReview = await reviewRequestCollection.deleteOne(filter);
+          return res.send({
+            updateReviewStatus,
+            insertApprovedReview,
+            deleteReview,
+          });
+        }
+        if (status === "Rejected") {
+          const deleteReview = await reviewRequestCollection.deleteOne(filter);
+          return res.send({
+            updateReviewStatus,
+            deleteReview,
+          });
+        }
 
-      res.send({ updateReviewStatus });
-    });
+        res.send({ updateReviewStatus });
+      },
+    );
 
     ////////////:::: cart related APIs ::::////////////
 
@@ -385,43 +477,52 @@ async function run() {
     });
 
     // add to cart
-    app.post("/orderFood", async (req, res) => {
+    app.post("/orderFood", verifyFBToken, async (req, res) => {
       const newOrder = req.body;
       const result = await cartCollection.insertOne(newOrder);
       res.send(result);
     });
 
     // delete all cart item by email
-    app.delete("/orderFood", async (req, res) => {
+    app.delete("/orderFood", verifyFBToken,  async (req, res) => {
       const email = req.query.email;
       const result = await cartCollection.deleteMany({ email });
       res.send(result);
     });
 
     // delete cart item by id
-    app.delete("/orderFood/:id", async (req, res) => {
-      const id = req.params.id;
-      //   console.log(id);
-      const query = { _id: new ObjectId(id) };
-      const result = await cartCollection.deleteOne(query);
-      res.send(result);
-    });
+    app.delete(
+      "/orderFood/:id",
+      verifyFBToken,
+      async (req, res) => {
+        const id = req.params.id;
+        //   console.log(id);
+        const query = { _id: new ObjectId(id) };
+        const result = await cartCollection.deleteOne(query);
+        res.send(result);
+      },
+    );
 
     // update cart item status by id
-    app.patch("/orderFood/:id", async (req, res) => {
-      const id = req.params.id;
-      const body = req.body;
-      const filter = { _id: new ObjectId(id) };
-      const updateDoc = {
-        $set: {
-          status: body.status,
-        },
-      };
-      const result = await cartCollection.updateOne(filter, updateDoc);
-    });
+    app.patch(
+      "/orderFood/:id",
+      verifyFBToken,
+      adminVerify,
+      async (req, res) => {
+        const id = req.params.id;
+        const body = req.body;
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            status: body.status,
+          },
+        };
+        const result = await cartCollection.updateOne(filter, updateDoc);
+      },
+    );
 
     ////////////:::: ordered related APIs ::::////////////
-    app.get("/ordered", async (req, res) => {
+    app.get("/ordered", verifyFBToken, adminVerify, async (req, res) => {
       const orderedList = await orderedCollection
         .find()
         .sort({ date: -1 })
@@ -430,7 +531,7 @@ async function run() {
     });
 
     ////////////:::: payment related APIs ::::////////////
-    app.post("/create-payment-intent", async (req, res) => {
+    app.post("/create-payment-intent",verifyFBToken, async (req, res) => {
       const { price } = req.body;
 
       const amount = Math.round(Number(price) * 100);
@@ -448,48 +549,58 @@ async function run() {
       });
     });
     // all payment
-    app.get("/payments", async (req, res) => {
+    app.get("/payments", verifyFBToken, adminVerify, async (req, res) => {
       const paymentList = await paymentCollection.find().toArray();
       res.send(paymentList);
     });
 
     ////////////:::: order related APIs ::::////////////
 
-    app.get("/save-order", async (req, res) => {
+    app.get("/save-order",verifyFBToken, async (req, res) => {
       const orderList = await orderedCollection.find().toArray();
       res.send(orderList);
     });
 
-    app.patch("/save-order/:id", async (req, res) => {
-      const id = req.params.id;
-      const body = req.body;
-      // console.log(id, body.newStatus);
-      const filter = { _id: new ObjectId(id) };
-      const updateDoc = {
-        $set: {
-          status: body.newStatus,
-        },
-      };
-      const result = await orderedCollection.updateOne(filter, updateDoc);
-      res.send(result);
-    });
+    app.patch(
+      "/save-order/:id",
+      verifyFBToken,
+      adminVerify,
+      async (req, res) => {
+        const id = req.params.id;
+        const body = req.body;
+        // console.log(id, body.newStatus);
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            status: body.newStatus,
+          },
+        };
+        const result = await orderedCollection.updateOne(filter, updateDoc);
+        res.send(result);
+      },
+    );
 
-    app.patch("/save-order/paymentStatus/:id", async (req, res) => {
-      const id = req.params.id;
-      const body = req.body;
-      // console.log(id, body.newStatus);
-      const filter = { _id: new ObjectId(id) };
-      const updateDoc = {
-        $set: {
-          paymentStatus: body.newStatus,
-        },
-      };
-      const result = await orderedCollection.updateOne(filter, updateDoc);
-      res.send(result);
-    });
+    app.patch(
+      "/save-order/paymentStatus/:id",
+      verifyFBToken,
+      adminVerify,
+      async (req, res) => {
+        const id = req.params.id;
+        const body = req.body;
+        // console.log(id, body.newStatus);
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            paymentStatus: body.newStatus,
+          },
+        };
+        const result = await orderedCollection.updateOne(filter, updateDoc);
+        res.send(result);
+      },
+    );
 
     // new order post
-    app.post("/save-order", async (req, res) => {
+    app.post("/save-order", verifyFBToken, async (req, res) => {
       const order = req.body;
       // console.log(order.map((id) => new ObjectId(id._id)));
       const result = await orderedCollection.insertOne(order);
@@ -497,7 +608,7 @@ async function run() {
     });
 
     // get order by email
-    app.get("/save-order/:email", async (req, res) => {
+    app.get("/save-order/:email",verifyFBToken, async (req, res) => {
       const query = { email: req.params.email };
       // if (req.params.email !== req.user.email) {
       //     console.log(query)
@@ -508,57 +619,60 @@ async function run() {
       res.send(result);
     });
 
-    app.delete("/completeOrder", async (req, res) => {
-      const { paymentStatus } = req.body;
+    app.delete(
+      "/completeOrder",
+      verifyFBToken,
+      adminVerify,
+      async (req, res) => {
+        const { paymentStatus } = req.body;
 
-      if (paymentStatus === "Completed") {
-        const orders = await orderedCollection
-          .find({
-            status: "Completed",
-            paymentStatus: paymentStatus,
-          })
-          .toArray();
+        if (paymentStatus === "Completed") {
+          const orders = await orderedCollection
+            .find({
+              status: "Completed",
+              paymentStatus: paymentStatus,
+            })
+            .toArray();
 
-        if (orders.length === 0) {
-          return res.status(404).send({
-            message: "No completed orders found",
-          });
+          if (orders.length === 0) {
+            return res.status(404).send({
+              message: "No completed orders found",
+            });
+          }
+          if (orders.length > 0) {
+            const paymentHistory =
+              await paymentHistoryCollection.insertMany(orders);
+            const deleteOrder = await orderedCollection.deleteMany({
+              status: "Completed",
+              paymentStatus: paymentStatus,
+            });
+            res.send({ deleteOrder, paymentHistory });
+          }
         }
-        if (orders.length > 0) {
-          const paymentHistory = await paymentHistoryCollection.insertMany(
-            orders
-          );
-          const deleteOrder = await orderedCollection.deleteMany({
-            status: "Completed",
-            paymentStatus: paymentStatus,
-          });
-          res.send({ deleteOrder, paymentHistory });
-        }
-      }
 
-      if (paymentStatus === "Failed") {
-        const orders = await orderedCollection
-          .find({
-            paymentStatus: paymentStatus,
-          })
-          .toArray();
+        if (paymentStatus === "Failed") {
+          const orders = await orderedCollection
+            .find({
+              paymentStatus: paymentStatus,
+            })
+            .toArray();
 
-        if (orders.length === 0) {
-          return res.status(404).send({
-            message: "No failed orders found",
-          });
+          if (orders.length === 0) {
+            return res.status(404).send({
+              message: "No failed orders found",
+            });
+          }
+          if (orders.length > 0) {
+            const paymentHistory =
+              await paymentHistoryCollection.insertMany(orders);
+            const deleteOrder = await orderedCollection.deleteMany({
+              paymentStatus: paymentStatus,
+            });
+            res.send({ deleteOrder, paymentHistory });
+          }
         }
-        if (orders.length > 0) {
-          const paymentHistory = await paymentHistoryCollection.insertMany(
-            orders
-          );
-          const deleteOrder = await orderedCollection.deleteMany({
-            paymentStatus: paymentStatus,
-          });
-          res.send({ deleteOrder, paymentHistory });
-        }
-      }
-    });
+      },
+    );
 
     app.get("/paymentHistory", async (req, res) => {
       const email = req.query.email;
@@ -570,264 +684,173 @@ async function run() {
       res.send(paymentHistory);
     });
 
-    app.post("/paymentHistory", async (req, res) => {
-      const paymentHistory = req.body;
-      const result = await paymentHistoryCollection.insertOne(paymentHistory);
-      res.send(result);
-    });
+    app.post(
+      "/paymentHistory",
+      verifyFBToken,
+      adminVerify,
+      async (req, res) => {
+        const paymentHistory = req.body;
+        const result = await paymentHistoryCollection.insertOne(paymentHistory);
+        res.send(result);
+      },
+    );
 
-    app.delete("/paymentHistory", async (req, res) => {
-      const { ids } = req.body;
-      console.log(ids);
-      if (!ids || !ids.length) {
-        return res.status(404).send({ message: "No orders selected" });
-      }
-      const objectIds = ids.map((id) => new ObjectId(id));
+    app.delete(
+      "/paymentHistory",
+      verifyFBToken,
+      adminVerify,
+      async (req, res) => {
+        const { ids } = req.body;
+        console.log(ids);
+        if (!ids || !ids.length) {
+          return res.status(404).send({ message: "No orders selected" });
+        }
+        const objectIds = ids.map((id) => new ObjectId(id));
 
-      const result = await paymentHistoryCollection.deleteMany({
-        _id: { $in: objectIds },
-      });
-      res.send(result);
-    });
+        const result = await paymentHistoryCollection.deleteMany({
+          _id: { $in: objectIds },
+        });
+        res.send(result);
+      },
+    );
 
-    // app.get("/revenueMonthly", async (req, res) => {
-    //       const today = new Date();
-    //       const lastMonth = new Date(new Date().setDate(today.getDate() - 29));
-    //       const result = await paymentHistoryCollection
-    //         .aggregate([
-    //           {
-    //             $match: {
-    //               paymentStatus: "Completed",
-    //               date: { $gte: lastMonth, $lt: today },
-    //             },
-    //           },
-    //           {
-    //             group: {
-    //               _id: { $month: "$date" },
-    //               totalRevenue: { $sum: "$price" },
-    //               totalOrders: { $sum: 1 },
-    //             },
-    //           },
-    //           { $sort: { _id: 1 } },
-    //         ])
-    //         .toArray();
-    //       res.send(result);
-    //     });
+    app.get(
+      "/revenueMonthlySummary",
+      verifyFBToken,
+      adminVerify,
+      async (req, res) => {
+        const now = new Date();
 
-    // app.get("/revenueLastMonth", async (req, res) => {
-    //   const start = new Date();
-    //   start.setMonth(start.getMonth() - 1);
-    //   start.setDate(1);
-    //   start.setHours(0, 0, 0, 0);
+        const lastMonthStart = new Date(
+          now.getFullYear(),
+          now.getMonth() - 1,
+          1,
+          0,
+          0,
+          0,
+          0,
+        );
+        const lastMonthEnd = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          0,
+          23,
+          59,
+          59,
+          999,
+        );
 
-    //   const end = new Date();
-    //   end.setDate(0);
-    //   end.setHours(23, 59, 59, 999);
+        const thisMonthStart = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          1,
+          0,
+          0,
+          0,
+          0,
+        );
+        const thisMonthEnd = new Date(
+          now.getFullYear(),
+          now.getMonth() + 1,
+          0,
+          23,
+          59,
+          59,
+          999,
+        );
 
-    //   const result = await paymentHistoryCollection.aggregate([
-    //     {
-    //       $addFields: {
-    //         dateObj: { $toDate: "$date" }
-    //       }
-    //     },
-    //     {
-    //       $match: {
-    //         paymentStatus: "Completed",
-    //         dateObj: { $gte: start, $lte: end }
-    //       }
-    //     },
-    //     { $unwind: "$orderedItems" },
-    //     {
-    //       $group: {
-    //         _id: null,
-    //         totalItemsSold: { $sum: "$orderedItems.quantity" }
-    //       }
-    //     }
-    //   ]).toArray();
+        const result = await paymentHistoryCollection
+          .aggregate([
+            { $addFields: { dateObj: { $toDate: "$date" } } },
 
-    //   res.send({
-    //     totalItemsSold: result[0]?.totalItemsSold || 0
-    //   });
-    // });
+            { $match: { paymentStatus: "Completed" } },
 
-    // app.get("/revenueThisMonth", async (req, res) => {
-    //   const now = new Date();
-
-    //   // Start of this month
-    //   const start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-
-    //   // End of this month
-    //   const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-
-    //   const result = await paymentHistoryCollection.aggregate([
-    //     // Convert string date to Date
-    //     { $addFields: { dateObj: { $toDate: "$date" } } },
-
-    //     // Only completed payments this month
-    //     {
-    //       $match: {
-    //         paymentStatus: "Completed",
-    //         dateObj: { $gte: start, $lte: end }
-    //       }
-    //     },
-
-    //     // Flatten orderedItems array for counting items
-    //     { $unwind: "$orderedItems" },
-
-    //     // Group everything
-    //     {
-    //       $group: {
-    //         _id: null,
-    //         totalRevenue: { $sum: "$price" },           // Total money
-    //         totalItemsSold: { $sum: "$orderedItems.quantity" }, // Total items
-    //         totalOrders: { $sum: 1 }                   // Total orders (each orderedItem counts as 1)
-    //       }
-    //     }
-    //   ]).toArray();
-
-    //   res.send({
-    //     totalRevenue: result[0]?.totalRevenue || 0,
-    //     totalItemsSold: result[0]?.totalItemsSold || 0,
-    //     totalOrders: result[0]?.totalOrders || 0
-    //   });
-    // });
-
-    app.get("/revenueMonthlySummary", async (req, res) => {
-      const now = new Date();
-
-      // Last month range
-      const lastMonthStart = new Date(
-        now.getFullYear(),
-        now.getMonth() - 1,
-        1,
-        0,
-        0,
-        0,
-        0
-      );
-      const lastMonthEnd = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        0,
-        23,
-        59,
-        59,
-        999
-      );
-
-      // This month range
-      const thisMonthStart = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        1,
-        0,
-        0,
-        0,
-        0
-      );
-      const thisMonthEnd = new Date(
-        now.getFullYear(),
-        now.getMonth() + 1,
-        0,
-        23,
-        59,
-        59,
-        999
-      );
-
-      const result = await paymentHistoryCollection
-        .aggregate([
-          // Convert date string to Date
-          { $addFields: { dateObj: { $toDate: "$date" } } },
-
-          // Only completed payments
-          { $match: { paymentStatus: "Completed" } },
-
-          {
-            $facet: {
-              lastMonth: [
-                {
-                  $match: {
-                    dateObj: { $gte: lastMonthStart, $lte: lastMonthEnd },
+            {
+              $facet: {
+                lastMonth: [
+                  {
+                    $match: {
+                      dateObj: { $gte: lastMonthStart, $lte: lastMonthEnd },
+                    },
                   },
-                },
-                {
-                  $group: {
-                    _id: null,
-                    totalRevenue: { $sum: "$price" }, // Sum per order
-                    totalOrders: { $sum: 1 }, // Count orders
-                    totalUsers: { $addToSet: "$email" }, // Unique users
-                    orderedItemsArrays: { $push: "$orderedItems" }, // Keep items for counting
+                  {
+                    $group: {
+                      _id: null,
+                      totalRevenue: { $sum: "$price" }, 
+                      totalOrders: { $sum: 1 }, 
+                      totalUsers: { $addToSet: "$email" }, 
+                      orderedItemsArrays: { $push: "$orderedItems" },
+                    },
                   },
-                },
-                {
-                  $addFields: {
-                    totalItemsSold: {
-                      $sum: {
-                        $map: {
-                          input: "$orderedItemsArrays",
-                          as: "items",
-                          in: { $sum: "$$items.quantity" },
+                  {
+                    $addFields: {
+                      totalItemsSold: {
+                        $sum: {
+                          $map: {
+                            input: "$orderedItemsArrays",
+                            as: "items",
+                            in: { $sum: "$$items.quantity" },
+                          },
                         },
                       },
                     },
                   },
-                },
-              ],
-              thisMonth: [
-                {
-                  $match: {
-                    dateObj: { $gte: thisMonthStart, $lte: thisMonthEnd },
+                ],
+                thisMonth: [
+                  {
+                    $match: {
+                      dateObj: { $gte: thisMonthStart, $lte: thisMonthEnd },
+                    },
                   },
-                },
-                {
-                  $group: {
-                    _id: null,
-                    totalRevenue: { $sum: "$price" },
-                    totalOrders: { $sum: 1 },
-                    totalUsers: { $addToSet: "$email" },
-                    orderedItemsArrays: { $push: "$orderedItems" },
+                  {
+                    $group: {
+                      _id: null,
+                      totalRevenue: { $sum: "$price" },
+                      totalOrders: { $sum: 1 },
+                      totalUsers: { $addToSet: "$email" },
+                      orderedItemsArrays: { $push: "$orderedItems" },
+                    },
                   },
-                },
-                {
-                  $addFields: {
-                    totalItemsSold: {
-                      $sum: {
-                        $map: {
-                          input: "$orderedItemsArrays",
-                          as: "items",
-                          in: { $sum: "$$items.quantity" },
+                  {
+                    $addFields: {
+                      totalItemsSold: {
+                        $sum: {
+                          $map: {
+                            input: "$orderedItemsArrays",
+                            as: "items",
+                            in: { $sum: "$$items.quantity" },
+                          },
                         },
                       },
                     },
                   },
-                },
-              ],
+                ],
+              },
             },
+          ])
+          .toArray();
+
+        const last = result[0].lastMonth[0] || {};
+        const current = result[0].thisMonth[0] || {};
+
+        res.send({
+          lastMonth: {
+            totalRevenue: last.totalRevenue || 0,
+            totalItemsSold: last.totalItemsSold || 0,
+            totalOrders: last.totalOrders || 0,
+            totalUsers: last.totalUsers?.length || 0,
           },
-        ])
-        .toArray();
+          thisMonth: {
+            totalRevenue: current.totalRevenue || 0,
+            totalItemsSold: current.totalItemsSold || 0,
+            totalOrders: current.totalOrders || 0,
+            totalUsers: current.totalUsers?.length || 0,
+          },
+        });
+      },
+    );
 
-      const last = result[0].lastMonth[0] || {};
-      const current = result[0].thisMonth[0] || {};
-
-      res.send({
-        lastMonth: {
-          totalRevenue: last.totalRevenue || 0,
-          totalItemsSold: last.totalItemsSold || 0,
-          totalOrders: last.totalOrders || 0,
-          totalUsers: last.totalUsers?.length || 0,
-        },
-        thisMonth: {
-          totalRevenue: current.totalRevenue || 0,
-          totalItemsSold: current.totalItemsSold || 0,
-          totalOrders: current.totalOrders || 0,
-          totalUsers: current.totalUsers?.length || 0,
-        },
-      });
-    });
-
-    app.get("/revenueWeekly", async (req, res) => {
+    app.get("/revenueWeekly", verifyFBToken, adminVerify, async (req, res) => {
       const today = new Date();
       const last7Days = new Date();
       last7Days.setDate(today.getDate() - 6);
@@ -858,7 +881,6 @@ async function run() {
         ])
         .toArray();
 
-      // Fill missing days
       const result = [];
       for (let i = 0; i < 7; i++) {
         const d = new Date();
@@ -874,89 +896,100 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/soldItemsSummary", async (req, res) => {
-      const result = await paymentHistoryCollection
-        .aggregate([
-          {
-            $match: {
-              paymentStatus: "Completed",
-            },
-          },
-          { $unwind: "$orderedItems" },
-          {
-            $facet: {
-              byItem: [
-                {
-                  $group: {
-                    _id: "$orderedItems.name",
-                    totalQuantity: { $sum: "$orderedItems.quantity" },
-                  },
-                },
-                { $sort: { totalQuantity: -1 } },
-              ],
-              byType: [
-                {
-                  $group: {
-                    _id: "$orderedItems.type",
-                    totalQuantity: { $sum: "$orderedItems.quantity" },
-                  },
-                },
-                { $sort: { totalQuantity: -1 } },
-              ],
-              byMenuSection: [
-                {
-                  $group: {
-                    _id: "$orderedItems.menuSection",
-                    totalQuantity: { $sum: "$orderedItems.quantity" },
-                  },
-                },
-                { $sort: { totalQuantity: -1 } },
-              ],
-            },
-          },
-        ])
-        .toArray();
-
-      res.send(result[0]);
-    });
-
-    app.get("/ordersByPaymentMethod", async (req, res) => {
-      try {
+    app.get(
+      "/soldItemsSummary",
+      verifyFBToken,
+      adminVerify,
+      async (req, res) => {
         const result = await paymentHistoryCollection
           .aggregate([
-            // Only completed orders
             {
-              $match: { paymentStatus: "Completed" },
-            },
-
-            // Group by payment method
-            {
-              $group: {
-                _id: "$payment", // "Cash" or "Stripe"
-                totalOrders: { $sum: 1 }, // Count orders
-                totalRevenue: { $sum: "$price" }, // Sum revenue
+              $match: {
+                paymentStatus: "Completed",
               },
             },
-
-            // Optional: Sort by totalOrders
-            { $sort: { totalOrders: -1 } },
+            { $unwind: "$orderedItems" },
+            {
+              $facet: {
+                byItem: [
+                  {
+                    $group: {
+                      _id: "$orderedItems.name",
+                      totalQuantity: { $sum: "$orderedItems.quantity" },
+                    },
+                  },
+                  { $sort: { totalQuantity: -1 } },
+                ],
+                byType: [
+                  {
+                    $group: {
+                      _id: "$orderedItems.type",
+                      totalQuantity: { $sum: "$orderedItems.quantity" },
+                    },
+                  },
+                  { $sort: { totalQuantity: -1 } },
+                ],
+                byMenuSection: [
+                  {
+                    $group: {
+                      _id: "$orderedItems.menuSection",
+                      totalQuantity: { $sum: "$orderedItems.quantity" },
+                    },
+                  },
+                  { $sort: { totalQuantity: -1 } },
+                ],
+              },
+            },
           ])
           .toArray();
 
-        // Transform result for chart-friendly format
-        const chartData = {
-          Cash: result.find((r) => r._id === "Cash")?.totalOrders || 0,
-          Stripe: result.find((r) => r._id === "Paid")?.totalOrders || 0,
-          revenueCash: result.find((r) => r._id === "Cash")?.totalRevenue || 0,
-          revenueStripe:
-            result.find((r) => r._id === "Paid")?.totalRevenue || 0,
-        };
+        res.send(result[0]);
+      },
+    );
 
-        res.send(chartData);
-      } catch (err) {
-        console.error(err);
-        res.status(500).send({ message: "Server error" });
-      }
+    app.get(
+      "/ordersByPaymentMethod",
+      verifyFBToken,
+      adminVerify,
+      async (req, res) => {
+        try {
+          const result = await paymentHistoryCollection
+            .aggregate([
+              {
+                $match: { paymentStatus: "Completed" },
+              },
+              {
+                $group: {
+                  _id: "$payment", 
+                  totalOrders: { $sum: 1 }, 
+                  totalRevenue: { $sum: "$price" }, 
+                },
+              },
+
+              { $sort: { totalOrders: -1 } },
+            ])
+            .toArray();
+
+          const chartData = {
+            Cash: result.find((r) => r._id === "Cash")?.totalOrders || 0,
+            Stripe: result.find((r) => r._id === "Paid")?.totalOrders || 0,
+            revenueCash:
+              result.find((r) => r._id === "Cash")?.totalRevenue || 0,
+            revenueStripe:
+              result.find((r) => r._id === "Paid")?.totalRevenue || 0,
+          };
+
+          res.send(chartData);
+        } catch (err) {
+          console.error(err);
+          res.status(500).send({ message: "Server error" });
+        }
+      },
+    );
+
+    app.get("/coverage", async (req, res) => {
+      const result = await coverageCollection.find().toArray();
+      res.send(result);
     });
 
     //////////:::: end of all APIs ::::////////////
@@ -964,7 +997,7 @@ async function run() {
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
+      "Pinged your deployment. You successfully connected to MongoDB!",
     );
   } finally {
     // Ensures that the client will close when you finish/error

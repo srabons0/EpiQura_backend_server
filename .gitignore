@@ -1,0 +1,4 @@
+node_modules
+.env
+epiqura-firebase-adminsdk.json
+.vercel

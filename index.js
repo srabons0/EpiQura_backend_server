@@ -107,6 +107,10 @@ async function run() {
       next();
     };
 
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+
     ////////////:::: all food related APIs ::::////////////
 
     ////////////:::: category related APIs ::::////////////

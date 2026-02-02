@@ -15,7 +15,13 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: [
+    "http://localhost:5173",
+    "https://epiqura.netlify.app"
+  ],
+  credentials: true
+}));
 app.use(express.json());
 
 // console.log("Stripe Key:", process.env.STRIPE_SECRET_KEY);
@@ -477,14 +483,14 @@ console.log(email, tokenEmail);
     });
 
     // add to cart
-    app.post("/orderFood", verifyFBToken, async (req, res) => {
+    app.post("/orderFood", async (req, res) => {
       const newOrder = req.body;
       const result = await cartCollection.insertOne(newOrder);
       res.send(result);
     });
 
     // delete all cart item by email
-    app.delete("/orderFood", verifyFBToken,  async (req, res) => {
+    app.delete("/orderFood",  async (req, res) => {
       const email = req.query.email;
       const result = await cartCollection.deleteMany({ email });
       res.send(result);
@@ -492,8 +498,7 @@ console.log(email, tokenEmail);
 
     // delete cart item by id
     app.delete(
-      "/orderFood/:id",
-      verifyFBToken,
+      "/orderFood/:id", 
       async (req, res) => {
         const id = req.params.id;
         //   console.log(id);
@@ -996,9 +1001,9 @@ console.log(email, tokenEmail);
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!",
-    );
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!",
+    // );
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
